@@ -388,7 +388,7 @@ client.on("messageCreate", async (message) => {
 // ═════════════════════════════════════════════════════════════
 //  READY
 // ═════════════════════════════════════════════════════════════
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`✅ Pratic Bot online como ${client.user.tag}`);
   await scam.carregar();
 
@@ -455,3 +455,12 @@ client.once("ready", async () => {
 });
 
 client.login(config.TOKEN);
+
+// ─────────────────────────────────────────────
+//  Porta fictícia para o Render não matar o bot
+// ─────────────────────────────────────────────
+const express = require("express");
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.get("/", (req, res) => res.send("Pratic Bot online ✅"));
+app.listen(PORT, () => console.log(`🌐 Porta ${PORT} aberta`));
