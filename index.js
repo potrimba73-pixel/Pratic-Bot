@@ -255,11 +255,14 @@ client.on("guildMemberAdd", async (member) => {
 // ═════════════════════════════════════════════════════════════
 client.on("interactionCreate", async (interaction) => {
 
-  if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
-    const [, idioma, chave] = interaction.customId.split(":");
-    const embed = criarEmbed(idioma, chave);
-    return interaction.update({ embeds: [embed], components: [linhaIdiomas(chave)] });
-  }
+if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
+  const [, idioma, chave] = interaction.customId.split(":");
+  const embed = criarEmbed(idioma, chave);
+  return interaction.reply({
+    embeds: [embed],
+    ephemeral: true,   // 👈 só quem clicou vê
+  });
+}
 
   if (!interaction.isChatInputCommand()) return;
 
