@@ -1,15 +1,16 @@
 // ============================================================
-//  PRATIC BOT — index.js
+//  PRATIC BOT — index.js (v2 corrigida)
 // ============================================================
 const {
   Client, GatewayIntentBits, Partials,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  PermissionFlagsBits,
+  PermissionFlagsBits, AttachmentBuilder,
 } = require("discord.js");
 
 const config     = require("./config");
 const TRADUCOES  = require("./traducoes");
 const scam       = require("./scamDetector");
+const sharp      = require("sharp");
 const fs         = require("fs");
 const path       = require("path");
 
@@ -22,6 +23,20 @@ const client = new Client({
   ],
   partials: [Partials.Message, Partials.Channel],
 });
+
+// ═════════════════════════════════════════════════════════════
+//  ✅ FIX #1: ler config DINAMICAMENTE (sem reiniciar o bot)
+// ═════════════════════════════════════════════════════════════
+function lerConfig(nome) {
+  const f = path.join(__dirname, "configs", `${nome}.json`);
+  if (!fs.existsSync(f)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(f, "utf8"));
+  } catch (e) {
+    console.warn(`⚠️  Config ${nome} inválida:`, e.message);
+    return {};
+  }
+}
 
 // ─────────────────────────────────────────────
 function substituirCanais(texto) {
@@ -52,7 +67,6 @@ function anexarImagem(embed, caminho) {
   return { embed, file: { attachment: caminho, name: nome } };
 }
 
-// ─────────────────────────────────────────────
 function linhaIdiomas(chaveEmbed) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`lang:pt-pt:${chaveEmbed}`).setLabel("PT-PT").setEmoji("🇵🇹").setStyle(ButtonStyle.Secondary),
@@ -63,22 +77,182 @@ function linhaIdiomas(chaveEmbed) {
   );
 }
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  ✅ FIX #3: GERAR IMAGEM DE BOAS-VINDAS (avatar + texto + cores)
+// ═════════════════════════════════════════════════════════════
+async function gerarImagemBoasVindas(member, imgCfg) {
+  const W = 1024, H = 400;
+
+  // 1) Fundo: cor sólida ou URL de imagem
+  let fundo;
+  if (imgCfg.bgUrl && imgCfg.bgUrl.startsWith("http")) {
+    try {
+      const resp = await fetch(imgCfg.bgUrl);
+      const buf  = Buffer.from(await resp.arrayBuffer());
+      fundo = await sharp(buf).resize(W, H, { fit: "cover" }).toBuffer();
+    } catch {
+      fundo = await sharp({
+        create: { width: W, height: H, channels: 4, background: imgCfg.bgColor || "#1e1f22" },
+      }).png().toBuffer();
+    }
+  } else if (imgCfg.bgUrl && imgCfg.bgUrl.startsWith("/assets/")) {
+    // imagem guardada localmente
+    const local = path.join(__dirname, imgCfg.bgUrl.replace(/^\//, ""));
+    if (fs.existsSync(local)) {
+      fundo = await sharp(local).resize(W, H, { fit: "cover" }).toBuffer();
+    }
+  }
+  if (!fundo) {
+    fundo = await sharp({
+      create: { width: W, height: H, channels: 4, background: imgCfg.bgColor || "#1e1f22" },
+    }).png().toBuffer();
+  }
+
+  // 2) Avatar redondo
+  const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
+  const avatarBuf = await sharp(Buffer.from(await (await fetch(avatarUrl)).arrayBuffer()))
+    .resize(200, 200)
+    .png()
+    .toBuffer();
+
+  let avatarMascara;
+  if (imgCfg.avatarShape === "circle") {
+    const svgCirculo = `<svg width="200" height="200"><circle cx="100" cy="100" r="100" fill="#fff"/></svg>`;
+    avatarMascara = await sharp(avatarBuf)
+      .composite([{ input: Buffer.from(svgCirculo), blend: "dest-in" }])
+      .png().toBuffer();
+  } else if (imgCfg.avatarShape === "rounded") {
+    const svgRounded = `<svg width="200" height="200"><rect x="0" y="0" width="200" height="200" rx="30" fill="#fff"/></svg>`;
+    avatarMascara = await sharp(avatarBuf)
+      .composite([{ input: Buffer.from(svgRounded), blend: "dest-in" }])
+      .png().toBuffer();
+  } else {
+    avatarMascara = avatarBuf;
+  }
+
+  // 3) Texto (nome + mensagem)
+  const nome = member.user.username;
+  const texto = (imgCfg.imgText || "Bem-vindo {user.name}")
+    .replace(/{user\.name}/g, nome)
+    .replace(/{user\.mention}/g, nome)
+    .replace(/{server\.name}/g, member.guild.name)
+    .replace(/{memberCount}/g, member.guild.memberCount);
+
+  const nomeCor    = imgCfg.nameColor || "#ffffff";
+  const msgCor     = imgCfg.msgColor  || "#dbdee1";
+  const circleCor  = imgCfg.circleColor || "#5865F2";
+
+  const svgTexto = `
+    <svg width="${W}" height="${H}">
+      <style>
+        .nome { font-family: 'Segoe UI', Arial, sans-serif; font-size: 46px; font-weight: 700; fill: ${nomeCor}; }
+        .msg  { font-family: 'Segoe UI', Arial, sans-serif; font-size: 28px; fill: ${msgCor}; }
+      </style>
+      <text x="380" y="200" class="nome">${escapeXml(nome)}</text>
+      <text x="380" y="250" class="msg">${escapeXml(texto)}</text>
+      <circle cx="280" cy="200" r="110" fill="${circleCor}" opacity="0.35"/>
+    </svg>`;
+
+  // 4) Compor tudo
+  const resultado = await sharp(fundo)
+    .composite([
+      { input: avatarMascara, left: 180, top: 100 },
+      { input: Buffer.from(svgTexto), left: 0, top: 0 },
+    ])
+    .png()
+    .toBuffer();
+
+  return new AttachmentBuilder(resultado, { name: "boas_vindas.png" });
+}
+
+function escapeXml(s) {
+  return String(s).replace(/[<>&'"]/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c])
+  );
+}
+
+// ═════════════════════════════════════════════════════════════
+//  ✅ FIX #2 + #1: on_guildMemberAdd usa config dinamicamente
+// ═════════════════════════════════════════════════════════════
 client.on("guildMemberAdd", async (member) => {
-  const canal = member.guild.channels.cache.get(config.canais["boas-vindas"]);
-  if (!canal) return;
+  const cfg = lerConfig("welcome");
+  if (!cfg.channel) return;
 
-  const embed = criarEmbed(config.idiomaPadrao, "boas-vindas")
-    .setDescription(
-      substituirCanais(TRADUCOES[config.idiomaPadrao]["boas-vindas"].descricao)
-        .replace("Bem-vindo", `Bem-vindo, ${member.user.username}`)
-    );
+  const canal = member.guild.channels.cache.get(cfg.channel);
+  if (!canal) {
+    console.warn(`⚠️  Canal de boas-vindas não encontrado: ${cfg.channel}`);
+    return;
+  }
 
-  const { embed: e2, file } = anexarImagem(embed, config.fotos.boasVindas);
-  await canal.send({ content: `${member}`, embeds: [e2], files: file ? [file] : [] });
+  const interpolar = (txt) => (txt || "")
+    .replace(/{user\.mention}/g, `${member}`)
+    .replace(/{user\.name}/g, member.user.username)
+    .replace(/{user\.tag}/g, member.user.tag)
+    .replace(/{server\.name}/g, member.guild.name)
+    .replace(/{memberCount}/g, member.guild.memberCount);
+
+  const msg = interpolar(cfg.message);
+
+  // Gerar imagem personalizada
+  let attachment = null;
+  try {
+    attachment = await gerarImagemBoasVindas(member, cfg.image || {});
+  } catch (e) {
+    console.warn("⚠️  Erro a gerar imagem de boas-vindas:", e.message);
+  }
+
+  // Sem embed → manda texto + imagem
+  if (!cfg.useEmbed) {
+    const payload = { content: msg || `${member}` };
+    if (attachment) {
+      payload.files = [attachment];
+      // Se a posição é "incorporado", mete a imagem como URL de embed simples
+      if (cfg.image?.position === "incorporado") {
+        payload.embeds = [new EmbedBuilder().setImage("attachment://boas_vindas.png")];
+      }
+    }
+    return canal.send(payload);
+  }
+
+  // Com embed
+  const e = cfg.embed || {};
+  const embed = new EmbedBuilder()
+    .setColor(e.color || 0x5865F2)
+    .setDescription(interpolar(e.description) || undefined);
+
+  if (e.title)     embed.setTitle(interpolar(e.title));
+  if (e.author)    embed.setAuthor({ name: interpolar(e.author) });
+  if (e.thumb)     embed.setThumbnail(e.thumb);
+  if (e.footer)    embed.setFooter({ text: interpolar(e.footer), iconURL: e.footerIcon || undefined });
+  if (e.timestamp) embed.setTimestamp();
+
+  if (e.fields?.length) {
+    embed.addFields(e.fields.map((f) => ({
+      name: interpolar(f.name),
+      value: interpolar(f.value),
+      inline: !!f.inline,
+    })));
+  }
+
+  // Posição da imagem
+  const payload = { content: msg || undefined, embeds: [embed] };
+  if (attachment) {
+    payload.files = [attachment];
+    const pos = cfg.image?.position || "padrao";
+    if (pos === "incorporado" || pos === "padrao") {
+      embed.setImage("attachment://boas_vindas.png");
+    }
+    // pos === "anexo" → fica como ficheiro solto
+  } else if (e.image) {
+    embed.setImage(e.image);
+  }
+
+  await canal.send(payload);
 });
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  INTERAÇÕES
+// ═════════════════════════════════════════════════════════════
 client.on("interactionCreate", async (interaction) => {
 
   if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
@@ -109,6 +283,10 @@ client.on("interactionCreate", async (interaction) => {
       enviados++;
     }
     return interaction.editReply(`✅ Enviei **${enviados}** embeds.`);
+  }
+
+  if (interaction.commandName === "reload") {
+    return interaction.reply({ content: "♻️ Config recarregada automaticamente em cada evento.", ephemeral: true });
   }
 
   if (["ban","kick","mute","warn"].includes(interaction.commandName)) {
@@ -156,7 +334,9 @@ async function logMod(guild, titulo, alvo, staff, motivo, foto) {
   await canal.send({ embeds: [e2], files: file ? [file] : [] });
 }
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  ANTI-SCAM
+// ═════════════════════════════════════════════════════════════
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
 
@@ -199,14 +379,15 @@ client.on("messageCreate", async (message) => {
 
   if (config.scam.avisarStaff) {
     try {
-      await message.channel.send({
-        content: `🚫 ${message.author} — imagem de scam removida.`,
-      }).then((m) => setTimeout(() => m.delete().catch(() => {}), 5000));
+      await message.channel.send({ content: `🚫 ${message.author} — imagem de scam removida.` })
+        .then((m) => setTimeout(() => m.delete().catch(() => {}), 5000));
     } catch {}
   }
 });
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  READY
+// ═════════════════════════════════════════════════════════════
 client.once("ready", async () => {
   console.log(`✅ Pratic Bot online como ${client.user.tag}`);
   await scam.carregar();
@@ -236,6 +417,7 @@ client.once("ready", async () => {
       ],
     },
     { name: "setup_todos", description: "Envia todos os embeds para os canais configurados no .env." },
+    { name: "reload",      description: "Confirma que a config é recarregada automaticamente." },
     {
       name: "ban", description: "Bane um membro.",
       default_member_permissions: String(PermissionFlagsBits.BanMembers),
