@@ -1,6 +1,5 @@
 // ============================================================
-//  PRATIC BOT — DASHBOARD
-//  Corre em: http://localhost:3000
+//  PRATIC BOT — DASHBOARD (v2 profissional)
 // ============================================================
 const express = require("express");
 const multer  = require("multer");
@@ -14,99 +13,93 @@ const app  = express();
 const PORT = process.env.DASHBOARD_PORT || 3000;
 
 const PASTA_ASSETS = path.join(__dirname, "assets");
-if (!fs.existsSync(PASTA_ASSETS)) fs.mkdirSync(PASTA_ASSETS, { recursive: true });
+const PASTA_CONFIGS = path.join(__dirname, "configs");
+if (!fs.existsSync(PASTA_ASSETS))  fs.mkdirSync(PASTA_ASSETS,  { recursive: true });
+if (!fs.existsSync(PASTA_CONFIGS)) fs.mkdirSync(PASTA_CONFIGS, { recursive: true });
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 15 * 1024 * 1024 },
 });
 
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "dashboard")));
 app.use("/assets", express.static(PASTA_ASSETS));
 
-// ── Listar assets ──
+// ─────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────
+function lerConfig(nome) {
+  const f = path.join(PASTA_CONFIGS, `${nome}.json`);
+  if (!fs.existsSync(f)) return {};
+  try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; }
+}
+function gravarConfig(nome, dados) {
+  const f = path.join(PASTA_CONFIGS, `${nome}.json`);
+  fs.writeFileSync(f, JSON.stringify(dados, null, 2), "utf8");
+}
+
+// ─────────────────────────────────────────────
+//  ASSETS
+// ─────────────────────────────────────────────
 app.get("/api/assets", (req, res) => {
   const ficheiros = fs.readdirSync(PASTA_ASSETS);
-  const info = ficheiros.map((f) => {
-    const caminho = path.join(PASTA_ASSETS, f);
-    const stat = fs.statSync(caminho);
-    return {
-      nome: f,
-      tamanho: stat.size,
-      atualizado: stat.mtime,
-      url: `/assets/${f}`,
-    };
-  });
-  res.json(info);
+  res.json(ficheiros.map((f) => {
+    const stat = fs.statSync(path.join(PASTA_ASSETS, f));
+    return { nome: f, tamanho: stat.size, atualizado: stat.mtime, url: `/assets/${f}` };
+  }));
 });
 
-// ── Config ──
-app.get("/api/config", (req, res) => {
-  res.json({
-    canais: config.canais,
-    logs:   config.logs,
-    fotos:  config.fotos,
-    scam: {
-      castigoMinutos:   config.scam.castigoMinutos,
-      apagarMensagem:   config.scam.apagarMensagem,
-      avisarStaff:      config.scam.avisarStaff,
-      hammingThreshold: config.scam.hammingThreshold,
-    },
-  });
-});
-
-// ── Upload ──
 app.post("/api/upload/:tipo", upload.single("imagem"), async (req, res) => {
   const tipo = req.params.tipo;
-  const tiposValidos = ["boas_vindas", "ban", "kick", "mute", "warn"];
-  if (!tiposValidos.includes(tipo)) {
-    return res.status(400).json({ erro: "Tipo inválido" });
-  }
-  if (!req.file) {
-    return res.status(400).json({ erro: "Sem ficheiro" });
-  }
+  if (!req.file) return res.status(400).json({ erro: "Sem ficheiro" });
 
   const destino = path.join(PASTA_ASSETS, `${tipo}.png`);
-
   try {
     await sharp(req.file.buffer)
       .resize({ width: 1920, height: 1080, fit: "inside", withoutEnlargement: true })
       .png({ quality: 92 })
       .toFile(destino);
-
-    res.json({
-      ok: true,
-      ficheiro: `${tipo}.png`,
-      url: `/assets/${tipo}.png?t=${Date.now()}`,
-    });
+    res.json({ ok: true, url: `/assets/${tipo}.png?t=${Date.now()}` });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ erro: "Erro a processar imagem: " + e.message });
+    res.status(500).json({ erro: "Erro: " + e.message });
   }
 });
 
-// ── Apagar ──
 app.delete("/api/assets/:nome", (req, res) => {
-  const nome = path.basename(req.params.nome);
-  const caminho = path.join(PASTA_ASSETS, nome);
+  const caminho = path.join(PASTA_ASSETS, path.basename(req.params.nome));
   if (!fs.existsSync(caminho)) return res.status(404).json({ erro: "Não existe" });
   fs.unlinkSync(caminho);
   res.json({ ok: true });
 });
 
-// ── Status ──
+// ─────────────────────────────────────────────
+//  CONFIGS (welcome, leave, anuncios, mod, scam, ...)
+// ─────────────────────────────────────────────
+const SECOES = ["welcome", "leave", "anuncios", "mod", "scam", "idiomas", "embeds", "geral"];
+
+SECOES.forEach((secao) => {
+  app.get(`/api/config/${secao}`, (req, res) => res.json(lerConfig(secao)));
+  app.post(`/api/config/${secao}`, (req, res) => {
+    gravarConfig(secao, req.body);
+    res.json({ ok: true });
+  });
+});
+
+// ─────────────────────────────────────────────
+//  STATUS
+// ─────────────────────────────────────────────
 app.get("/api/status", (req, res) => {
   const temToken = !!config.TOKEN;
   const canaisPreenchidos = Object.values(config.canais).filter(Boolean).length;
   const totalCanais = Object.keys(config.canais).length;
-  const temLogs = !!(config.logs.mod && config.logs.scam);
   const scamPronto = fs.existsSync(path.join(__dirname, "scam-hashes.json"));
 
   res.json({
-    token: temToken ? "✅ configurado" : "❌ em falta",
-    canais: `${canaisPreenchidos}/${totalCanais}`,
-    logs: temLogs ? "✅" : "❌",
-    scam: scamPronto ? "✅ pronto" : "⚠️ corre npm run scan",
+    token: temToken ? "ok" : "erro",
+    canais: { preenchidos: canaisPreenchidos, total: totalCanais },
+    logs: !!(config.logs.mod && config.logs.scam) ? "ok" : "erro",
+    scam: scamPronto ? "ok" : "aviso",
     uptime: process.uptime(),
   });
 });
