@@ -8,12 +8,12 @@
     "dashboard": "node dashboard.js",
     "scan": "node scamDetector.js scan"
   },
-  "dependencies": {
-    "discord.js": "^14.15.3",
-    "dotenv": "^16.4.5",
-    "imghash": "^0.0.15",
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1",
-    "sharp": "^0.33.4"
-  }
+"dependencies": {
+  "discord.js": "^14.27.0",
+  "dotenv": "^16.4.5",
+  "imghash": "^1.1.4",
+  "express": "^4.19.2",
+  "multer": "^2.3.0",
+  "sharp": "^0.34.2"
+}
 }
