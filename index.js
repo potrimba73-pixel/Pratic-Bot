@@ -1,5 +1,5 @@
 // ============================================================
-//  PRATIC BOT — index.js (v2 corrigida)
+//  PRATIC BOT — index.js (v3 — envia 1x por canal)
 // ============================================================
 const {
   Client, GatewayIntentBits, Partials,
@@ -25,10 +25,18 @@ const client = new Client({
 });
 
 // ═════════════════════════════════════════════════════════════
-//  ✅ FIX #1: ler config DINAMICAMENTE (sem reiniciar o bot)
+//  PASTAS / FICHEIROS
+// ═════════════════════════════════════════════════════════════
+const PASTA_CONFIGS = path.join(__dirname, "configs");
+if (!fs.existsSync(PASTA_CONFIGS)) fs.mkdirSync(PASTA_CONFIGS, { recursive: true });
+
+const FICHEIRO_ENVIADOS = path.join(PASTA_CONFIGS, "enviados.json");
+
+// ═════════════════════════════════════════════════════════════
+//  CONFIG DINÂMICA
 // ═════════════════════════════════════════════════════════════
 function lerConfig(nome) {
-  const f = path.join(__dirname, "configs", `${nome}.json`);
+  const f = path.join(PASTA_CONFIGS, `${nome}.json`);
   if (!fs.existsSync(f)) return {};
   try {
     return JSON.parse(fs.readFileSync(f, "utf8"));
@@ -38,7 +46,47 @@ function lerConfig(nome) {
   }
 }
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  REGISTO DE EMBEDS JÁ ENVIADOS
+// ═════════════════════════════════════════════════════════════
+function lerEnviados() {
+  if (!fs.existsSync(FICHEIRO_ENVIADOS)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(FICHEIRO_ENVIADOS, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function gravarEnviados(dados) {
+  fs.writeFileSync(FICHEIRO_ENVIADOS, JSON.stringify(dados, null, 2), "utf8");
+}
+
+function jaFoiEnviado(chave, canalId) {
+  const dados = lerEnviados();
+  return !!dados[chave]?.[canalId];
+}
+
+function marcarComoEnviado(chave, canalId, messageId) {
+  const dados = lerEnviados();
+  if (!dados[chave]) dados[chave] = {};
+  dados[chave][canalId] = { ts: Date.now(), messageId: messageId ?? null };
+  gravarEnviados(dados);
+}
+
+function limparEnviados(chave = null) {
+  if (!chave) {
+    gravarEnviados({});
+    return;
+  }
+  const dados = lerEnviados();
+  delete dados[chave];
+  gravarEnviados(dados);
+}
+
+// ═════════════════════════════════════════════════════════════
+//  PLACEHOLDERS / EMBEDS
+// ═════════════════════════════════════════════════════════════
 function substituirCanais(texto) {
   return texto.replace(/\{CANAL:([a-z0-9\-]+)\}/g, (_, nome) => {
     const id = config.canais[nome];
@@ -78,12 +126,11 @@ function linhaIdiomas(chaveEmbed) {
 }
 
 // ═════════════════════════════════════════════════════════════
-//  ✅ FIX #3: GERAR IMAGEM DE BOAS-VINDAS (avatar + texto + cores)
+//  IMAGEM DE BOAS-VINDAS
 // ═════════════════════════════════════════════════════════════
 async function gerarImagemBoasVindas(member, imgCfg) {
   const W = 1024, H = 400;
 
-  // 1) Fundo: cor sólida ou URL de imagem
   let fundo;
   if (imgCfg.bgUrl && imgCfg.bgUrl.startsWith("http")) {
     try {
@@ -96,7 +143,6 @@ async function gerarImagemBoasVindas(member, imgCfg) {
       }).png().toBuffer();
     }
   } else if (imgCfg.bgUrl && imgCfg.bgUrl.startsWith("/assets/")) {
-    // imagem guardada localmente
     const local = path.join(__dirname, imgCfg.bgUrl.replace(/^\//, ""));
     if (fs.existsSync(local)) {
       fundo = await sharp(local).resize(W, H, { fit: "cover" }).toBuffer();
@@ -108,7 +154,6 @@ async function gerarImagemBoasVindas(member, imgCfg) {
     }).png().toBuffer();
   }
 
-  // 2) Avatar redondo
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   const avatarBuf = await sharp(Buffer.from(await (await fetch(avatarUrl)).arrayBuffer()))
     .resize(200, 200)
@@ -130,7 +175,6 @@ async function gerarImagemBoasVindas(member, imgCfg) {
     avatarMascara = avatarBuf;
   }
 
-  // 3) Texto (nome + mensagem)
   const nome = member.user.username;
   const texto = (imgCfg.imgText || "Bem-vindo {user.name}")
     .replace(/{user\.name}/g, nome)
@@ -153,7 +197,6 @@ async function gerarImagemBoasVindas(member, imgCfg) {
       <circle cx="280" cy="200" r="110" fill="${circleCor}" opacity="0.35"/>
     </svg>`;
 
-  // 4) Compor tudo
   const resultado = await sharp(fundo)
     .composite([
       { input: avatarMascara, left: 180, top: 100 },
@@ -172,7 +215,7 @@ function escapeXml(s) {
 }
 
 // ═════════════════════════════════════════════════════════════
-//  ✅ FIX #2 + #1: on_guildMemberAdd usa config dinamicamente
+//  BOAS-VINDAS
 // ═════════════════════════════════════════════════════════════
 client.on("guildMemberAdd", async (member) => {
   const cfg = lerConfig("welcome");
@@ -193,7 +236,6 @@ client.on("guildMemberAdd", async (member) => {
 
   const msg = interpolar(cfg.message);
 
-  // Gerar imagem personalizada
   let attachment = null;
   try {
     attachment = await gerarImagemBoasVindas(member, cfg.image || {});
@@ -201,12 +243,10 @@ client.on("guildMemberAdd", async (member) => {
     console.warn("⚠️  Erro a gerar imagem de boas-vindas:", e.message);
   }
 
-  // Sem embed → manda texto + imagem
   if (!cfg.useEmbed) {
     const payload = { content: msg || `${member}` };
     if (attachment) {
       payload.files = [attachment];
-      // Se a posição é "incorporado", mete a imagem como URL de embed simples
       if (cfg.image?.position === "incorporado") {
         payload.embeds = [new EmbedBuilder().setImage("attachment://boas_vindas.png")];
       }
@@ -214,7 +254,6 @@ client.on("guildMemberAdd", async (member) => {
     return canal.send(payload);
   }
 
-  // Com embed
   const e = cfg.embed || {};
   const embed = new EmbedBuilder()
     .setColor(e.color || 0x5865F2)
@@ -234,7 +273,6 @@ client.on("guildMemberAdd", async (member) => {
     })));
   }
 
-  // Posição da imagem
   const payload = { content: msg || undefined, embeds: [embed] };
   if (attachment) {
     payload.files = [attachment];
@@ -242,7 +280,6 @@ client.on("guildMemberAdd", async (member) => {
     if (pos === "incorporado" || pos === "padrao") {
       embed.setImage("attachment://boas_vindas.png");
     }
-    // pos === "anexo" → fica como ficheiro solto
   } else if (e.image) {
     embed.setImage(e.image);
   }
@@ -255,43 +292,97 @@ client.on("guildMemberAdd", async (member) => {
 // ═════════════════════════════════════════════════════════════
 client.on("interactionCreate", async (interaction) => {
 
-if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
-  const [, idioma, chave] = interaction.customId.split(":");
-  const embed = criarEmbed(idioma, chave);
-  return interaction.reply({
-    embeds: [embed],
-    ephemeral: true,   // 👈 só quem clicou vê
-  });
-}
+  if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
+    const [, idioma, chave] = interaction.customId.split(":");
+    const embed = criarEmbed(idioma, chave);
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
 
   if (!interaction.isChatInputCommand()) return;
 
+  // ─── /setup_embeds ───
   if (interaction.commandName === "setup_embeds") {
-    const canal = interaction.options.getChannel("canal");
-    const chave = interaction.options.getString("embed");
+    const canal  = interaction.options.getChannel("canal");
+    const chave  = interaction.options.getString("embed");
+    const forcar = interaction.options.getBoolean("forcar") ?? false;
+
+    if (!forcar && jaFoiEnviado(chave, canal.id)) {
+      return interaction.reply({
+        content:
+          `⚠️ O embed **${chave}** já foi enviado em ${canal}.\n` +
+          `Usa \`forcar: True\` se quiseres enviar de novo.`,
+        ephemeral: true,
+      });
+    }
+
     const embed = criarEmbed(config.idiomaPadrao, chave);
-    await canal.send({ embeds: [embed], components: [linhaIdiomas(chave)] });
-    return interaction.reply({ content: `✅ Embed **${chave}** enviado em ${canal}.`, ephemeral: true });
+    const msg = await canal.send({ embeds: [embed], components: [linhaIdiomas(chave)] });
+    marcarComoEnviado(chave, canal.id, msg.id);
+
+    return interaction.reply({
+      content: `✅ Embed **${chave}** enviado em ${canal}.`,
+      ephemeral: true,
+    });
   }
 
+  // ─── /setup_todos ───
   if (interaction.commandName === "setup_todos") {
     await interaction.deferReply({ ephemeral: true });
+    const forcar = interaction.options.getBoolean("forcar") ?? false;
+
     let enviados = 0;
+    let saltados = 0;
+    let falhados = 0;
+
     for (const [chave, id] of Object.entries(config.canais)) {
       if (!id) continue;
       const canal = interaction.guild.channels.cache.get(id);
       if (!canal) continue;
-      const embed = criarEmbed(config.idiomaPadrao, chave);
-      await canal.send({ embeds: [embed], components: [linhaIdiomas(chave)] });
-      enviados++;
+
+      if (!forcar && jaFoiEnviado(chave, canal.id)) {
+        saltados++;
+        continue;
+      }
+
+      try {
+        const embed = criarEmbed(config.idiomaPadrao, chave);
+        const msg = await canal.send({ embeds: [embed], components: [linhaIdiomas(chave)] });
+        marcarComoEnviado(chave, canal.id, msg.id);
+        enviados++;
+      } catch (e) {
+        console.warn(`⚠️  Falha a enviar "${chave}" em ${canal.name}:`, e.message);
+        falhados++;
+      }
     }
-    return interaction.editReply(`✅ Enviei **${enviados}** embeds.`);
+
+    return interaction.editReply(
+      `✅ Enviados: **${enviados}**\n` +
+      `⏭️  Saltados (já existiam): **${saltados}**\n` +
+      `❌ Falhados: **${falhados}**`
+    );
   }
 
+  // ─── /reset_embeds ───
+  if (interaction.commandName === "reset_embeds") {
+    const chave = interaction.options.getString("embed");
+    limparEnviados(chave || null);
+    return interaction.reply({
+      content: chave
+        ? `♻️ Histórico do embed **${chave}** apagado.`
+        : `♻️ Histórico de **todos** os embeds apagado.`,
+      ephemeral: true,
+    });
+  }
+
+  // ─── /reload ───
   if (interaction.commandName === "reload") {
-    return interaction.reply({ content: "♻️ Config recarregada automaticamente em cada evento.", ephemeral: true });
+    return interaction.reply({
+      content: "♻️ A config é recarregada automaticamente em cada evento.",
+      ephemeral: true,
+    });
   }
 
+  // ─── MODERAÇÃO ───
   if (["ban","kick","mute","warn"].includes(interaction.commandName)) {
     const membro = interaction.options.getUser("membro");
     const motivo = interaction.options.getString("motivo") ?? "Sem motivo";
@@ -318,7 +409,9 @@ if (interaction.isButton() && interaction.customId.startsWith("lang:")) {
   }
 });
 
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  LOGS DE MODERAÇÃO
+// ═════════════════════════════════════════════════════════════
 async function logMod(guild, titulo, alvo, staff, motivo, foto) {
   const canal = guild.channels.cache.get(config.logs.mod);
   if (!canal) return;
@@ -417,10 +510,52 @@ client.once("clientReady", async () => {
             { name: "Licenças",        value: "licencas" },
           ],
         },
+        {
+          name: "forcar",
+          description: "Reenviar mesmo que já tenha sido enviado",
+          type: 5,
+          required: false,
+        },
       ],
     },
-    { name: "setup_todos", description: "Envia todos os embeds para os canais configurados no .env." },
-    { name: "reload",      description: "Confirma que a config é recarregada automaticamente." },
+    {
+      name: "setup_todos",
+      description: "Envia todos os embeds em falta para os canais configurados no .env.",
+      options: [
+        {
+          name: "forcar",
+          description: "Reenviar tudo mesmo que já tenha sido enviado",
+          type: 5,
+          required: false,
+        },
+      ],
+    },
+    {
+      name: "reset_embeds",
+      description: "Apaga o histórico de embeds enviados (permite reenviar).",
+      options: [
+        {
+          name: "embed",
+          description: "Embed específico (vazio = todos)",
+          type: 3,
+          required: false,
+          choices: [
+            { name: "Boas-vindas",     value: "boas-vindas" },
+            { name: "Regras",          value: "regras" },
+            { name: "Anúncios",        value: "anuncios" },
+            { name: "Sobre o bot",     value: "sobre-o-bot" },
+            { name: "Idiomas",         value: "idiomas" },
+            { name: "Abrir ticket",    value: "abrir-ticket" },
+            { name: "Ajuda",           value: "ajuda" },
+            { name: "Feedback",        value: "feedback" },
+            { name: "Funcionalidades", value: "funcionalidades" },
+            { name: "Planos",          value: "planos" },
+            { name: "Licenças",        value: "licencas" },
+          ],
+        },
+      ],
+    },
+    { name: "reload", description: "Confirma que a config é recarregada automaticamente." },
     {
       name: "ban", description: "Bane um membro.",
       default_member_permissions: String(PermissionFlagsBits.BanMembers),
@@ -459,9 +594,9 @@ client.once("clientReady", async () => {
 
 client.login(config.TOKEN);
 
-// ─────────────────────────────────────────────
-//  Porta fictícia para o Render não matar o bot
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
+//  PORTA FICTÍCIA (Render)
+// ═════════════════════════════════════════════════════════════
 const express = require("express");
 const app = express();
 const PORT = process.env.PORT || 3000;
